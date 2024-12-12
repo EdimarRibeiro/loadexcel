@@ -1,58 +1,52 @@
 package controllers
 
 import (
-	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 
-	"github.com/EdimarRibeiro/loadexcel/api/common"
-	"github.com/EdimarRibeiro/loadexcel/internal/entities"
-	entitiesinterface "github.com/EdimarRibeiro/loadexcel/internal/interfaces/entities"
+	"github.com/EdimarRibeiro/loadexcel/internal/infrastructure"
 )
 
-type fileController struct {
-	file entitiesinterface.FileRepositoryInterface
+type FileController struct{}
+
+func CreateFileController() *FileController {
+	return &FileController{}
 }
 
-func CreateFileController(fileRep entitiesinterface.FileRepositoryInterface) *fileController {
-	return &fileController{file: fileRep}
-}
+func (c *FileController) CreateFileHandler(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	defer r.Body.Close()
 
-func (repo *fileController) GetAll(tenantId uint64) ([]entities.File, error) {
-	files, err := repo.file.Search("")
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, err
-	}
-	return files, nil
-}
-
-func (repo *fileController) GetAllHandler(w http.ResponseWriter, r *http.Request) {
-	_, tenantId, err := common.ValidateToken(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		http.Error(w, "Erro ao ler o corpo da requisição: "+err.Error(), http.StatusBadRequest)
+		fmt.Printf("Erro ao ler o corpo da requisição: %v\n", err)
 		return
 	}
-	files, err := repo.GetAll(tenantId)
-	if err != nil {
-		http.Error(w, "Error retrieving file "+err.Error(), http.StatusInternalServerError)
+	fmt.Println("Tamanho do corpo recebido:", len(body))
+
+	if len(body) < 4 || string(body[:4]) != "%PDF" {
+		http.Error(w, "O arquivo enviado não é um PDF válido", http.StatusBadRequest)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(files)
-}
-
-func (file *fileControler) CreateFileHandler(w http.ResponseWriter, r *http.Request) {
-	var fileNew models.File
-	if err := json.NewDecoder(r.Body).Decode(&fileNew); err != nil {
-		http.Error(w, "Error decoding JSON "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	err := file.CreateNewFile(fileNew)
+	excelFile, err := infrastructure.ProcessPDFBytesToExcel(body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Erro ao processar o PDF: "+err.Error(), http.StatusInternalServerError)
+		fmt.Printf("Erro ao processar o PDF: %v\n", err)
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", `attachment; filename="output.xlsx"`)
 	w.WriteHeader(http.StatusOK)
+
+	if err := excelFile.Write(w); err != nil {
+		http.Error(w, "Erro ao escrever o arquivo Excel: "+err.Error(), http.StatusInternalServerError)
+		fmt.Printf("Erro ao escrever o arquivo Excel: %v\n", err)
+		return
+	}
+
+	fmt.Println("Arquivo Excel gerado e enviado com sucesso.")
 }
